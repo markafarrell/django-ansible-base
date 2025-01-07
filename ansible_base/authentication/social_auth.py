@@ -1,4 +1,5 @@
 import importlib
+import jwt
 import logging
 
 from django.conf import settings
@@ -6,6 +7,8 @@ from django.contrib.auth import get_user_model
 from django.db import models
 from django.db.utils import IntegrityError
 from django.http import HttpResponseNotFound
+from django.utils.translation import gettext_lazy as _
+from jwt.exceptions import PyJWTError
 from social_core.utils import setting_name
 from social_django.models import Association, Code, Nonce, Partial
 from social_django.storage import BaseDjangoStorage
@@ -193,7 +196,29 @@ def create_user_claims_pipeline(*args, backend, response, **kwargs):
 
     groups_claim = backend.groups_claim if backend.groups_claim is not None else "Group"
 
-    extra_groups = response[groups_claim] if groups_claim in response else []
+    if groups_claim in response:
+        # Attempt to extact groups claim from data returned by UserInfo endpoint
+        extra_groups = response[groups_claim]
+        logger.debug(
+            f"extra_groups extracted from UserInfo: {extra_groups}")
+    else:
+        # If groups_claim isn't in UserInfo attempt to extract it from id_token
+        try:
+            id_token_claims = jwt.decode(
+                response['id_token'],
+                options={"verify_signature": False}
+            )
+        except PyJWTError as e:
+            logger.error(_(f"Unable to decode id_token response JWT: {e}"))
+            id_token_claims = {}
+
+        if groups_claim in id_token_claims:
+            extra_groups = id_token_claims[groups_claim]
+            logger.debug(
+                f"extra_groups extracted from id_token: {extra_groups}")
+        else:
+            extra_groups = []
+
     user = update_user_claims(kwargs["user"], backend.database_instance, backend.get_user_groups(extra_groups))
     if user is None:
         return SOCIAL_AUTH_PIPELINE_FAILED_STATUS
